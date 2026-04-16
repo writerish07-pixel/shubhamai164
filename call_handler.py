@@ -100,6 +100,8 @@ def process_customer_speech(call_sid: str, audio_bytes: bytes) -> bytes:
     if not session:
         return b""
 
+    # [+] CHANGE: STT path now uses voice.transcribe_audio(), which is Groq-first
+    # with Sarvam/Deepgram fallback in voice.py.
     # 1. Speech to Text
     stt_result    = transcribe_audio(audio_bytes, "hi-IN")
     customer_text = stt_result.get("text", "").strip()

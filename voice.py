@@ -14,6 +14,7 @@ import base64, re
 import httpx
 import asyncio
 import config as config
+from groq import Groq
 
 # 🔥 OPTIMIZATION: Persistent HTTP client with connection pooling
 # Reuses TCP connections — saves ~100-200ms per request (no new TLS handshake)
@@ -33,6 +34,19 @@ def _get_client() -> httpx.AsyncClient:
 
 SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
 SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
+GROQ_STT_MODEL = "whisper-large-v3"
+
+# [+] CHANGE: singleton Groq client for low-latency STT path.
+_groq_client = None
+
+
+def _get_groq_client() -> Groq:
+    global _groq_client
+    if _groq_client is None:
+        if not config.GROQ_API_KEY:
+            raise ValueError("GROQ_API_KEY not configured")
+        _groq_client = Groq(api_key=config.GROQ_API_KEY)
+    return _groq_client
 
 
 # ── LANGUAGE NORMALISATION ────────────────────────────────────────────────────
@@ -83,6 +97,14 @@ async def transcribe_audio_async(audio_bytes: bytes, language_hint: str = "hi-IN
     Async version of transcribe_audio.
     Returns {"text": "...", "language": "hindi/english/hinglish", "confidence": float}
     """
+    # [+] CHANGE: Groq Whisper STT first for latency optimization.
+    try:
+        result = await _groq_stt_async(audio_bytes)
+        if result.get("text"):
+            return result
+    except Exception as e:
+        print(f"[Voice] Groq STT failed: {e}, trying Sarvam")
+
     try:
         result = await _sarvam_stt_async(audio_bytes, _lang_to_code(language_hint))
         if result.get("text"):
@@ -100,6 +122,14 @@ async def transcribe_audio_async(audio_bytes: bytes, language_hint: str = "hi-IN
 # 🔥 OPTIMIZATION: Keep synchronous version for backward compatibility but use httpx
 def transcribe_audio(audio_bytes: bytes, language_hint: str = "hi-IN") -> dict:
     """Synchronous wrapper — delegates to sync httpx calls."""
+    # [+] CHANGE: Groq Whisper STT first for latency optimization.
+    try:
+        result = _groq_stt(audio_bytes)
+        if result.get("text"):
+            return result
+    except Exception as e:
+        print(f"[Voice] Groq STT failed: {e}, trying Sarvam")
+
     try:
         result = _sarvam_stt(audio_bytes, _lang_to_code(language_hint))
         if result.get("text"):
@@ -112,6 +142,27 @@ def transcribe_audio(audio_bytes: bytes, language_hint: str = "hi-IN") -> dict:
     except Exception as e:
         print(f"[Voice] Deepgram STT failed: {e}")
         return {"text": "", "language": "unknown", "confidence": 0.0}
+
+
+def _groq_stt(audio_bytes: bytes) -> dict:
+    """Sync Groq Whisper STT."""
+    client = _get_groq_client()
+    transcript = client.audio.transcriptions.create(
+        file=("audio.wav", audio_bytes),
+        model=GROQ_STT_MODEL,
+        response_format="verbose_json",
+    )
+    return {
+        "text": (getattr(transcript, "text", "") or "").strip(),
+        "language": _normalize_lang(getattr(transcript, "language", "hi")),
+        "confidence": 0.9,
+    }
+
+
+async def _groq_stt_async(audio_bytes: bytes) -> dict:
+    """Async wrapper for Groq STT via thread offload (SDK is sync)."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _groq_stt, audio_bytes)
 
 
 async def _sarvam_stt_async(audio_bytes: bytes, language: str = "hi-IN") -> dict:
