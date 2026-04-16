@@ -156,6 +156,36 @@ def _record_xml(call_sid: str, play_url: str = None, say_text: str = None) -> st
         finishOnKey="#" />
 </Response>"""
 
+
+# [+] CHANGE: resolve public base URL from runtime request context (no static-only dependency).
+def _resolve_public_base_url(request: Request) -> str:
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    forwarded_host = request.headers.get("x-forwarded-host")
+    if forwarded_host:
+        scheme = forwarded_proto or request.url.scheme or "https"
+        return f"{scheme}://{forwarded_host}".rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+# [+] CHANGE: request-aware XML builder using runtime-resolved base URL.
+def _record_xml_runtime(request: Request, call_sid: str, play_url: str = None, say_text: str = None) -> str:
+    content = ""
+    if play_url:
+        content = f"<Play>{play_url}</Play>"
+    elif say_text:
+        content = f'<Say language="hi-IN" voice="woman">{_xml_safe(say_text)}</Say>'
+    action_url = f"{_resolve_public_base_url(request)}/call/gather/{call_sid}"
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+{content}
+<Record action="{action_url}"
+        method="POST"
+        maxLength="60"
+        timeout="10"
+        playBeep="false"
+        finishOnKey="#" />
+</Response>"""
+
 def _download_recording(url: str) -> bytes:
     """
     Download a <Record> audio file from Exotel.
@@ -218,16 +248,8 @@ async def incoming_call(request: Request, background_tasks: BackgroundTasks):
     start_call_session(call_sid, caller, direction="inbound")
 
     greeting = "Namaste! Main Priya bol rahi hoon, Shubham Motors Hero MotoCorp se, Jaipur. Aap ka call receive karke bahut khushi hui! Kaise madad kar sakti hoon aapki?"
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say language="hi-IN">{_xml_safe(greeting)}</Say>
-  <Record action="{config.PUBLIC_URL}/call/gather/{call_sid}"
-          method="POST"
-          maxLength="60"
-          timeout="10"
-          playBeep="false"
-          finishOnKey="#" />
-</Response>"""
+    # [+] CHANGE: use runtime URL resolution for callback action URL.
+    xml = _record_xml_runtime(request, call_sid, say_text=greeting)
 
     return Response(content=xml, media_type="application/xml")
 
@@ -259,13 +281,14 @@ async def outbound_call_handler(request: Request):
         if opening_audio:
             opening_path = UPLOAD_DIR / f"opening_{call_sid}.mp3"
             opening_path.write_bytes(opening_audio)
-            opening_url = f"{config.PUBLIC_URL}/call/audio/opening/{call_sid}"
+            # [+] CHANGE: runtime-resolved URL for Exotel playable media.
+            opening_url = f"{_resolve_public_base_url(request)}/call/audio/opening/{call_sid}"
     except Exception as e:
         print(f"[Outbound] Greeting gen error: {e}")
 
     if opening_url:
-        return Response(
-            content=_record_xml(call_sid, play_url=opening_url),
+            return Response(
+            content=_record_xml_runtime(request, call_sid, play_url=opening_url),
             media_type="application/xml"
         )
     else:
@@ -275,7 +298,7 @@ async def outbound_call_handler(request: Request):
             "kya aap abhi thodi der baat kar sakte hain?"
         )
         return Response(
-            content=_record_xml(call_sid, say_text=greeting),
+            content=_record_xml_runtime(request, call_sid, say_text=greeting),
             media_type="application/xml"
         )
 
@@ -346,7 +369,7 @@ async def handle_gather(call_sid: str, request: Request):
             retry_text = "Ji? Kuch clearly suna nahi — kya aap thoda louder bol sakte hain?"
 
             return Response(
-                content=_record_xml(call_sid, say_text=retry_text),
+                content=_record_xml_runtime(request, call_sid, say_text=retry_text),
                 media_type="application/xml",
             )
 
@@ -399,25 +422,25 @@ async def handle_gather(call_sid: str, request: Request):
             print(f"[PhraseCache] Gather: serving cached audio ({len(cached_pcm)} bytes)")
             audio_path = UPLOAD_DIR / f"response_{call_sid}.wav"
             audio_path.write_bytes(cached_pcm)
-            audio_url = f"{config.PUBLIC_URL}/call/audio/response/{call_sid}"
+            audio_url = f"{_resolve_public_base_url(request)}/call/audio/response/{call_sid}"
         else:
             ai_audio = await _run(synthesize_speech, voice_text, lang, timeout=12.0)
             if ai_audio:
                 audio_path = UPLOAD_DIR / f"response_{call_sid}.mp3"
                 audio_path.write_bytes(ai_audio)
-                audio_url = f"{config.PUBLIC_URL}/call/audio/response/{call_sid}"
+                audio_url = f"{_resolve_public_base_url(request)}/call/audio/response/{call_sid}"
 
         # ── Return response to Exotel ──────────────────────────────────
         if audio_url:
-            return Response(
-                content=_record_xml(call_sid, play_url=audio_url),
+                return Response(
+                content=_record_xml_runtime(request, call_sid, play_url=audio_url),
                 media_type="application/xml",
             )
         else:
             print(f"[Gather] [{call_sid}] TTS unavailable — using Say fallback")
 
             return Response(
-                content=_record_xml(call_sid, say_text=voice_text),
+                content=_record_xml_runtime(request, call_sid, say_text=voice_text),
                 media_type="application/xml",
             )
 
@@ -425,7 +448,7 @@ async def handle_gather(call_sid: str, request: Request):
         print(f"[Gather ERROR] {e}")
 
         return Response(
-            content=_record_xml(call_sid, say_text="Sorry, ek technical issue ho gaya."),
+            content=_record_xml_runtime(request, call_sid, say_text="Sorry, ek technical issue ho gaya."),
             media_type="application/xml",
         )
 

@@ -36,7 +36,8 @@ GROQ_MODEL          = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
 
 DEEPGRAM_API_KEY    = os.getenv("DEEPGRAM_API_KEY", "").strip()
 SARVAM_API_KEY      = os.getenv("SARVAM_API_KEY", "").strip()
-NGROK_AUTH_TOKEN    = os.getenv("NGROK_AUTH_TOKEN", "").strip()
+# [+] CHANGE: ngrok-specific token removed from active configuration surface.
+# [-] Removed: NGROK_AUTH_TOKEN
 
 # -- Google Sheets (optional) -------------------------------------------------
 GOOGLE_SHEET_ID     = os.getenv("GOOGLE_SHEET_ID", "").strip()
@@ -108,7 +109,8 @@ def validate_config() -> list:
     if not DEEPGRAM_API_KEY:
         warnings.append("DEEPGRAM_API_KEY is not set -- STT fallback unavailable")
     if PUBLIC_URL == "http://localhost:5000":
-        warnings.append("PUBLIC_URL is localhost -- Exotel webhooks require a public URL (use ngrok)")
+        # [+] CHANGE: generic production guidance (no ngrok assumption).
+        warnings.append("PUBLIC_URL is localhost -- Exotel webhooks require a public HTTPS URL")
     if not SALES_TEAM:
         warnings.append("No salesperson configured -- hot lead assignment disabled")
     return warnings
